@@ -1,4 +1,7 @@
 ﻿using Rabbit.Rpc.Address;
+using Rabbit.Rpc.Routing;
+using Rabbit.Rpc.Routing.Implementation;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -12,7 +15,15 @@ namespace Rabbit.Rpc.Runtime.Client.Address.Resolvers.Implementation.Selectors.I
     /// </summary>
     public class PollingAddressSelector : AddressSelectorBase
     {
-        private readonly ConcurrentDictionary<string, AddressEntry> _concurrent = new ConcurrentDictionary<string, AddressEntry>();
+        private readonly ConcurrentDictionary<string, Lazy<AddressEntry>> _concurrent =
+            new ConcurrentDictionary<string, Lazy<AddressEntry>>();
+
+        public PollingAddressSelector(IServiceRouteManager serviceRouteManager)
+        {
+            //路由发生变更时重建地址条目。
+            serviceRouteManager.Changed += ServiceRouteManager_Removed;
+            serviceRouteManager.Removed += ServiceRouteManager_Removed;
+        }
 
         #region Overrides of AddressSelectorBase
 
@@ -23,29 +34,30 @@ namespace Rabbit.Rpc.Runtime.Client.Address.Resolvers.Implementation.Selectors.I
         /// <returns>地址模型。</returns>
         protected override Task<AddressModel> SelectAsync(AddressSelectContext context)
         {
-            var key = context.ServiceRoute.ServiceDescriptor.Id;
+            var key = GetCacheKey(context.Descriptor);
             //根据服务id缓存服务地址。
-            var address = _concurrent.AddOrUpdate(key, k => new AddressEntry(context.ServiceRoute.Address), (k, currentEntry) =>
-              {
-                  var newAddress = context.ServiceRoute.Address.ToArray();
-                  var currentAddress = currentEntry.Address;
-                  var unionAddress = currentEntry.Address.Union(newAddress).ToArray();
-
-                  if (unionAddress.Length != currentAddress.Length)
-                      return new AddressEntry(newAddress);
-
-                  if (unionAddress.Any(addressModel => !newAddress.Contains(addressModel)))
-                  {
-                      return new AddressEntry(newAddress);
-                  }
-
-                  return currentEntry;
-              });
+            var address = _concurrent.GetOrAdd(key, k => new Lazy<AddressEntry>(() => new AddressEntry(context.Address))).Value;
 
             return Task.FromResult(address.GetAddress());
         }
 
         #endregion Overrides of AddressSelectorBase
+
+        #region Private Method
+
+        private static string GetCacheKey(ServiceDescriptor descriptor)
+        {
+            return descriptor.Id;
+        }
+
+        private void ServiceRouteManager_Removed(object sender, ServiceRouteEventArgs e)
+        {
+            var key = GetCacheKey(e.Route.ServiceDescriptor);
+            Lazy<AddressEntry> value;
+            _concurrent.TryRemove(key, out value);
+        }
+
+        #endregion Private Method
 
         #region Help Class
 
@@ -56,6 +68,7 @@ namespace Rabbit.Rpc.Runtime.Client.Address.Resolvers.Implementation.Selectors.I
             private int _index;
             private int _lock;
             private readonly int _maxIndex;
+            private readonly AddressModel[] _address;
 
             #endregion Field
 
@@ -63,17 +76,11 @@ namespace Rabbit.Rpc.Runtime.Client.Address.Resolvers.Implementation.Selectors.I
 
             public AddressEntry(IEnumerable<AddressModel> address)
             {
-                Address = address.ToArray();
-                _maxIndex = Address.Length - 1;
+                _address = address.ToArray();
+                _maxIndex = _address.Length - 1;
             }
 
             #endregion Constructor
-
-            #region Property
-
-            public AddressModel[] Address { get; set; }
-
-            #endregion Property
 
             #region Public Method
 
@@ -83,9 +90,12 @@ namespace Rabbit.Rpc.Runtime.Client.Address.Resolvers.Implementation.Selectors.I
                 {
                     //如果无法得到锁则等待
                     if (Interlocked.Exchange(ref _lock, 1) != 0)
+                    {
+                        default(SpinWait).SpinOnce();
                         continue;
+                    }
 
-                    var address = Address[_index];
+                    var address = _address[_index];
 
                     //设置为下一个
                     if (_maxIndex > _index)

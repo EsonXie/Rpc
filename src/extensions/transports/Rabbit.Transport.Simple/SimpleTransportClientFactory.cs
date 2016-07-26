@@ -44,9 +44,14 @@ namespace Rabbit.Transport.Simple
             return _clients.GetOrAdd(key, k => new Lazy<ITransportClient>(() =>
             {
                 var messageListener = new MessageListener();
-                var client = new TcpSocketSaeaClient((IPEndPoint)endPoint, new SimpleMessageDispatcher(messageListener, _transportMessageCodecFactory, _logger), config);
-                client.Connect().Wait();
-                return new TransportClient(new SimpleClientMessageSender(_transportMessageCodecFactory.GetEncoder(), client), messageListener, _logger, _serviceExecutor);
+                Func<TcpSocketSaeaClient> clientFactory = () =>
+                {
+                    var client = new TcpSocketSaeaClient((IPEndPoint)endPoint,
+                        new SimpleMessageDispatcher(messageListener, _transportMessageCodecFactory, _logger), config);
+                    client.Connect().Wait();
+                    return client;
+                };
+                return new TransportClient(new SimpleClientMessageSender(_transportMessageCodecFactory.GetEncoder(), clientFactory), messageListener, _logger, _serviceExecutor);
             })).Value;
         }
 
@@ -85,7 +90,7 @@ namespace Rabbit.Transport.Simple
 
         public Task OnServerConnected(TcpSocketSaeaClient client)
         {
-#if NET45 || NET451
+#if NET
             return Task.FromResult(1);
 #else
             return Task.CompletedTask;
@@ -104,7 +109,7 @@ namespace Rabbit.Transport.Simple
 
             _messageListener.OnReceived(new SimpleClientMessageSender(_transportMessageEncoder, client), message);
 
-#if NET45 || NET451
+#if NET
             await Task.FromResult(1);
 #else
             await Task.CompletedTask;
@@ -113,7 +118,7 @@ namespace Rabbit.Transport.Simple
 
         public Task OnServerDisconnected(TcpSocketSaeaClient client)
         {
-#if NET45 || NET451
+#if NET
             return Task.FromResult(1);
 #else
             return Task.CompletedTask;

@@ -23,8 +23,9 @@ using Rabbit.Rpc.Transport.Codec;
 using Rabbit.Rpc.Transport.Codec.Implementation;
 using System;
 using System.Linq;
-
-#if !NET45 && !NET451
+using Rabbit.Rpc.Runtime.Client.HealthChecks;
+using Rabbit.Rpc.Runtime.Client.HealthChecks.Implementation;
+#if !NET
 
 using Microsoft.Extensions.DependencyModel;
 using System.Reflection;
@@ -132,7 +133,12 @@ namespace Rabbit.Rpc
         /// <returns>Rpc服务构建者。</returns>
         public static IRpcBuilder UseSharedFileRouteManager(this IRpcBuilder builder, string filePath)
         {
-            return builder.UseRouteManager(provider => new SharedFileServiceRouteManager(filePath, provider.GetRequiredService<ISerializer<string>>(), provider.GetRequiredService<ILogger<SharedFileServiceRouteManager>>()));
+            return builder.UseRouteManager(provider =>
+            new SharedFileServiceRouteManager(
+                filePath,
+                provider.GetRequiredService<ISerializer<string>>(),
+                provider.GetRequiredService<IServiceRouteFactory>(),
+                provider.GetRequiredService<ILogger<SharedFileServiceRouteManager>>()));
         }
 
         #region AddressSelector
@@ -262,6 +268,7 @@ namespace Rabbit.Rpc
         {
             var services = builder.Services;
 
+            services.AddSingleton<IHealthCheckService, DefaultHealthCheckService>();
             services.AddSingleton<IAddressResolver, DefaultAddressResolver>();
             services.AddSingleton<IRemoteInvokeService, RemoteInvokeService>();
 
@@ -281,7 +288,7 @@ namespace Rabbit.Rpc
             services.AddSingleton<IClrServiceEntryFactory, ClrServiceEntryFactory>();
             services.AddSingleton<IServiceEntryProvider>(provider =>
             {
-#if NET45 || NET451
+#if NET
                 var assemblys = AppDomain.CurrentDomain.GetAssemblies();
 #else
                 var assemblys = DependencyContext.Default.RuntimeLibraries.SelectMany(i => i.GetDefaultAssemblyNames(DependencyContext.Default).Select(z => Assembly.Load(new AssemblyName(z.Name))));
@@ -313,6 +320,8 @@ namespace Rabbit.Rpc
 
             services.AddSingleton<ITypeConvertibleProvider, DefaultTypeConvertibleProvider>();
             services.AddSingleton<ITypeConvertibleService, DefaultTypeConvertibleService>();
+
+            services.AddSingleton<IServiceRouteFactory, DefaultServiceRouteFactory>();
 
             return new RpcBuilder(services)
                 .AddJsonSerialization()
